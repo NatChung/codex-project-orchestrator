@@ -11,7 +11,7 @@ Codex Project Orchestrator 的目標是在同一位可信 operator 的作業系�
 
 `cpo ask` 與 operator MCP 是 operator 端的 persistent Orch 控制入口。兩者只透過 app server 對保存的 Orch thread 執行 turn；該 thread 仍套用 `orch` permission profile 與固定角色 `project_agents` MCP，不繼承呼叫端 Codex session 的檔案權限。Operator MCP 不公開 mailbox、任意 role 或任意 thread ID，只能 send、status、wait、read result、steer、interrupt，以及在人工核對後 acknowledge reconciliation。Operator-owned lock 序列化狀態變更；等待不持有 lock，因此仍可 steer 或 interrupt。
 
-Orch thread ID、active turn ID、最後結果、控制面設定 fingerprint 與 reconciliation 狀態保存在 private runtime state。權限、MCP 或 thread 參數變更時，runtime 會先讀取舊 thread；只有舊 thread 明確停止且不需要 reconciliation 時才建立新 thread，並保存 previous thread ID。新 thread 建立結果不確定時也保留舊 thread 身分與 pending fingerprint。`turn/start` 後連線中斷屬於不確定操作，系統拒絕自動重送；status、steer 與 interrupt 都不能清除 reconciliation。Operator 必須先核對 mailbox、worker 與 thread 狀態，再留下 reconciliation note；這個 acknowledgement 只解除重送阻擋，不宣稱先前副作用不存在。解除後若遠端回合仍 active，runtime 會從 server state 恢復唯一 active turn ID；缺失、重複或與本機不一致時安全停止並再次要求 reconciliation。
+Orch thread ID、active turn ID、最後結果、控制面設定 fingerprint 與 reconciliation 狀態保存在 private runtime state。Fingerprint 包含 compiled config、thread 參數與 app-server service generation；權限、MCP、thread 參數或 service instance 變更時，runtime 會先讀取舊 thread。只有舊 thread 明確停止且不需要 reconciliation 時才建立新 thread，並保存 previous thread ID。這也避免服務重啟後續接保留舊工具名稱、但沒有新 MCP binding 的 thread。新 thread 建立結果不確定時仍保留舊 thread 身分與 pending fingerprint。`turn/start` 後連線中斷屬於不確定操作，系統拒絕自動重送；status、steer 與 interrupt 都不能清除 reconciliation。Operator 必須先核對 mailbox、worker 與 thread 狀態，再留下 reconciliation note；這個 acknowledgement 只解除重送阻擋，不宣稱先前副作用不存在。解除後若遠端回合仍 active，runtime 會從 server state 恢復唯一 active turn ID；缺失、重複或與本機不一致時安全停止並再次要求 reconciliation。
 
 ## Runtime state 與工具面
 

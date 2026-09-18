@@ -214,6 +214,39 @@ class OrchestratorRuntimeTests(unittest.TestCase):
         self.assertEqual(persisted["thread_id"], "orch-thread-2")
         self.assertEqual(persisted["previous_thread_id"], "orch-thread")
 
+    def test_service_restart_rotates_completed_thread(self) -> None:
+        self.state.mkdir()
+        (self.state / "service.json").write_text('{"pid": 101}')
+        initial = FakeRPC(
+            {
+                "thread/start": response(self.cwd),
+                "turn/start": {"turn": {"id": "turn-1"}},
+            }
+        )
+        OrchestratorRuntime(
+            self.settings, self.state, rpc_factory=factory(initial)
+        ).prompt("first")
+        (self.state / "service.json").write_text('{"pid": 202}')
+        restarted = FakeRPC(
+            {
+                "thread/read": {
+                    "thread": response(
+                        self.cwd,
+                        turns=[{"id": "turn-1", "status": "completed", "items": []}],
+                    )["thread"]
+                },
+                "thread/start": response(self.cwd, thread_id="orch-thread-2"),
+                "turn/start": {"turn": {"id": "turn-2"}},
+            }
+        )
+        OrchestratorRuntime(
+            self.settings, self.state, rpc_factory=factory(restarted)
+        ).prompt("second")
+        self.assertEqual(
+            [method for method, _ in restarted.calls],
+            ["thread/read", "thread/start", "turn/start"],
+        )
+
     def test_configuration_change_refuses_to_rotate_active_thread(self) -> None:
         initial = FakeRPC(
             {

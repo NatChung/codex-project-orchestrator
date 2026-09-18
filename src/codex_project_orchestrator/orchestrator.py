@@ -440,10 +440,19 @@ class OrchestratorRuntime:
     def _thread_fingerprint(self, cwd: Path, profile: str) -> str:
         payload = {
             "compiled_config": compiled(self.settings, self.state),
+            "service_generation": self._service_generation(),
             "thread_params": self._thread_params(cwd, profile),
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode()).hexdigest()
+
+    def _service_generation(self) -> int | None:
+        try:
+            value = json.loads((self.state / "service.json").read_text())
+            pid = value.get("pid") if isinstance(value, dict) else None
+            return pid if isinstance(pid, int) and not isinstance(pid, bool) else None
+        except (OSError, json.JSONDecodeError):
+            return None
 
     def _read_metadata(self) -> dict[str, Any]:
         if not self.metadata_path.exists():
