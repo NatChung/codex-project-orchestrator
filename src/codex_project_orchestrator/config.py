@@ -10,6 +10,7 @@ import tempfile
 import tomllib
 
 ID = re.compile(r"[a-z][a-z0-9-]{0,47}\Z")
+RESERVED_WORKER_IDS = {"orchestrator", "operator", "orch", "local"}
 TESTED_CODEX = "0.154.0"
 ORCH_MODEL = "gpt-6-astra"
 WORKER_MODEL = "gpt-5.6-sol"
@@ -71,12 +72,13 @@ def validate(settings, state):
     workers = settings.get("workers", {})
     if not workers:
         raise ValueError("Register at least one project")
+    for worker_id in workers:
+        if not ID.fullmatch(worker_id) or worker_id in RESERVED_WORKER_IDS:
+            raise ValueError("Invalid project ID: " + worker_id)
     roles = {"orchestrator": settings["orchestrator"], **workers}
     seen = []
     for role, spec in roles.items():
         role_model(settings, role)
-        if role != "orchestrator" and (not ID.fullmatch(role) or role in ("orch", "local")):
-            raise ValueError("Invalid project ID: " + role)
         path = Path(spec["cwd"])
         if not path.is_absolute() or path.resolve() != path or not path.is_dir():
             raise ValueError("Project cwd must be an existing canonical absolute directory: " + str(path))
@@ -231,7 +233,12 @@ def initialize(state, orch, projects, runtime_read=()):
     workers = {}
     for entry in projects:
         role, sep, raw = entry.partition("=")
-        if not sep or role == "orchestrator" or role in workers or not ID.fullmatch(role):
+        if (
+            not sep
+            or role in RESERVED_WORKER_IDS
+            or role in workers
+            or not ID.fullmatch(role)
+        ):
             raise ValueError("Use unique --project id=/absolute/path entries")
         workers[role] = {"cwd": str(Path(raw).expanduser().resolve()), "profile": "worker-" + role, "model": WORKER_MODEL}
     # Validate before writing, except that the fresh orchestrator workspace must exist.

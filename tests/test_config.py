@@ -97,9 +97,23 @@ class ConfigTests(unittest.TestCase):
             initialize(self.alpha / 'state', self.orch, ['alpha=' + str(self.alpha)])
 
     def test_invalid_ids_and_duplicates(self):
-        for values in [['../bad=' + str(self.alpha)], ['orchestrator=' + str(self.alpha)], ['x=' + str(self.alpha), 'x=' + str(self.beta)]]:
+        for values in [
+            ['../bad=' + str(self.alpha)],
+            *[[reserved + '=' + str(self.alpha)] for reserved in ('orchestrator', 'operator', 'orch', 'local')],
+            ['x=' + str(self.alpha), 'x=' + str(self.beta)],
+        ]:
             with self.assertRaises(ValueError):
                 initialize(self.state, self.orch, values)
+
+    def test_manual_settings_cannot_register_reserved_worker(self):
+        settings = self.initialize()
+        for reserved in ('orchestrator', 'operator', 'orch', 'local'):
+            with self.subTest(reserved=reserved):
+                changed = dict(settings)
+                changed['workers'] = dict(settings['workers'])
+                changed['workers'][reserved] = changed['workers'].pop('alpha')
+                with self.assertRaisesRegex(ValueError, 'Invalid project ID'):
+                    validate(changed, self.state)
 
     def test_runtime_read_cannot_grant_other_projects(self):
         with self.assertRaises(ValueError):

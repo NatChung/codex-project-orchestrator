@@ -11,7 +11,7 @@ Codex Project Orchestrator 的目標是在同一位可信 operator 的作業系�
 
 `cpo ask` 與 operator MCP 是 operator 端的 persistent Orch 控制入口。兩者只透過 app server 對保存的 Orch thread 執行 turn；該 thread 仍套用 `orch` permission profile 與固定角色 `project_agents` MCP，不繼承呼叫端 Codex session 的檔案權限。Operator MCP 不公開 mailbox、任意 role 或任意 thread ID，只能 send、status、wait、read result、steer、interrupt，以及在人工核對後 acknowledge reconciliation。Operator-owned lock 序列化狀態變更；等待不持有 lock，因此仍可 steer 或 interrupt。
 
-Orch thread ID、active turn ID、最後結果、控制面設定 fingerprint 與 reconciliation 狀態保存在 private runtime state。權限、MCP 或 thread 參數變更時會建立新的 Orch thread，避免續接仍保留舊工具集合的 thread。`turn/start` 後連線中斷屬於不確定操作，系統拒絕自動重送。Operator 必須先核對 mailbox、worker 與 thread 狀態，再留下 reconciliation note；這個 acknowledgement 只解除重送阻擋，不宣稱先前副作用不存在。
+Orch thread ID、active turn ID、最後結果、控制面設定 fingerprint 與 reconciliation 狀態保存在 private runtime state。權限、MCP 或 thread 參數變更時，runtime 會先讀取舊 thread；只有舊 thread 明確停止且不需要 reconciliation 時才建立新 thread，並保存 previous thread ID。新 thread 建立結果不確定時也保留舊 thread 身分與 pending fingerprint。`turn/start` 後連線中斷屬於不確定操作，系統拒絕自動重送；status、steer 與 interrupt 都不能清除 reconciliation。Operator 必須先核對 mailbox、worker 與 thread 狀態，再留下 reconciliation note；這個 acknowledgement 只解除重送阻擋，不宣稱先前副作用不存在。解除後若遠端回合仍 active，runtime 會從 server state 恢復唯一 active turn ID；缺失、重複或與本機不一致時安全停止並再次要求 reconciliation。
 
 ## Runtime state 與工具面
 
@@ -20,6 +20,8 @@ Runtime state 由 operator 擁有，目錄應為 private，資料庫與敏感設
 每次部署使用專用 `CODEX_HOME`，不繼承 operator 日常環境中的 connectors、plugins 或 connector credentials。產生的設定會停用 plugins、multi-agent、web search 與 network proxy。若 operator 明確使用 `cpo login --reuse-current`，專用 home 會以 symbolic link 連到原本的 Codex file authentication；這是刻意選擇的 auth 共用例外，不代表 connectors 或 plugins 也被繼承。移除該 link 不會刪除原始 credential。這些措施可以縮小可用工具面，但不能把 MCP server 本身錯誤地視為已在 shell sandbox 內。
 
 Mailbox 以參數化 SQL 與固定 schema 實作，不接受呼叫者提供任意 SQL。只有已註冊角色能收送；orchestrator 只能送給 worker，worker 只能回覆 orchestrator，而且回覆必須對應同一 worker 已收到的 task ID。只有收件者能 acknowledge。這些限制是訊息路由控制，並不構成不同 OS user 之間的機密性邊界。
+
+`orchestrator`、`operator`、`orch` 與 `local` 是控制面保留身分，初始化與每次載入設定都拒絕將它們登錄為 worker。這項驗證必須同時涵蓋 CLI 輸入與 operator 手動修改的 TOML，避免 worker 透過名稱碰撞取得 operator 控制工具。
 
 ## `isolated` 模式
 

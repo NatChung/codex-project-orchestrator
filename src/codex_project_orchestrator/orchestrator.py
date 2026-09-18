@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import tempfile
 import time
@@ -69,8 +69,12 @@ class OrchestratorRuntime:
                     "acknowledge reconciliation before sending another prompt"
                 )
             with self.rpc_factory(self.socket) as rpc:
-                thread_id = self._ensure_thread(rpc, metadata, cwd, profile)
+                thread_id, previous_thread_id = self._ensure_thread(
+                    rpc, metadata, cwd, profile
+                )
                 ready = self._metadata(thread_id, cwd, profile, "idle")
+                if previous_thread_id is not None:
+                    ready["previous_thread_id"] = previous_thread_id
                 self._write_metadata(ready)
                 try:
                     result = rpc.request(
@@ -92,6 +96,8 @@ class OrchestratorRuntime:
                     raise RPCError("turn/start response omitted turn.id")
                 active = self._metadata(thread_id, cwd, profile, "active")
                 active["active_turn_id"] = turn_id
+                if previous_thread_id is not None:
+                    active["previous_thread_id"] = previous_thread_id
                 self._write_metadata(active)
                 return active
 
@@ -145,11 +151,13 @@ class OrchestratorRuntime:
         with FileLock(str(self.lock_path), timeout=10):
             metadata = self._read_metadata()
             self._validate_metadata(metadata, cwd, profile)
+            self._refuse_unreconciled(metadata)
             with self.rpc_factory(self.socket) as rpc:
                 metadata = self._refresh(rpc, metadata, cwd, profile)
+                self._refuse_unreconciled(metadata)
                 if metadata.get("status") != "active":
                     raise OrchestratorBusy("orchestrator has no active turn to steer")
-                turn_id = metadata.get("active_turn_id")
+                turn_id = self._active_turn_id(metadata)
                 result = rpc.request(
                     "turn/steer",
                     {
@@ -169,15 +177,18 @@ class OrchestratorRuntime:
         with FileLock(str(self.lock_path), timeout=10):
             metadata = self._read_metadata()
             self._validate_metadata(metadata, cwd, profile)
+            self._refuse_unreconciled(metadata)
             with self.rpc_factory(self.socket) as rpc:
                 metadata = self._refresh(rpc, metadata, cwd, profile)
+                self._refuse_unreconciled(metadata)
                 if metadata.get("status") != "active":
                     return metadata
+                turn_id = self._active_turn_id(metadata)
                 rpc.request(
                     "turn/interrupt",
                     {
                         "threadId": metadata["thread_id"],
-                        "turnId": metadata["active_turn_id"],
+                        "turnId": turn_id,
                     },
                 )
                 metadata["interrupt_requested"] = True
@@ -208,14 +219,14 @@ class OrchestratorRuntime:
         metadata: dict[str, Any],
         cwd: Path,
         profile: str,
-    ) -> str:
+    ) -> tuple[str, str | None]:
         common = self._thread_params(cwd, profile)
         thread_id = metadata.get("thread_id")
         fingerprint = self._thread_fingerprint(cwd, profile)
-        if metadata.get("thread_config_sha256") != fingerprint:
-            thread_id = None
+        previous_thread_id = None
         if thread_id:
             current = self._refresh(rpc, metadata, cwd, profile)
+            metadata = current
             if current.get("status") == "active":
                 raise OrchestratorBusy(
                     "orchestrator already has an active turn; use steer or wait"
@@ -224,27 +235,36 @@ class OrchestratorRuntime:
                 raise ReconciliationRequired(
                     "orchestrator requires reconciliation before another prompt"
                 )
-            resumed = rpc.request("thread/resume", {"threadId": thread_id, **common})
-            self._validate_effective(resumed, cwd, profile)
-            return thread_id
+            if metadata.get("thread_config_sha256") == fingerprint:
+                resumed = rpc.request(
+                    "thread/resume", {"threadId": thread_id, **common}
+                )
+                self._validate_effective(resumed, cwd, profile)
+                return thread_id, None
+            previous_thread_id = thread_id
         try:
             started = rpc.request("thread/start", common)
         except RPCUncertainError as exc:
-            self._mark_ambiguous(
-                {
+            uncertain = (
+                dict(metadata)
+                if previous_thread_id is not None
+                else {
                     "identity": "orchestrator",
                     "cwd": str(cwd),
                     "profile": profile,
                     "thread_config_sha256": fingerprint,
-                },
-                exc,
+                }
             )
+            if previous_thread_id is not None:
+                uncertain["pending_thread_config_sha256"] = fingerprint
+                uncertain["previous_thread_id"] = previous_thread_id
+            self._mark_ambiguous(uncertain, exc)
         self._validate_effective(started, cwd, profile)
         thread = _thread(started)
         thread_id = thread.get("id")
         if not isinstance(thread_id, str) or not thread_id:
             raise RPCError("thread/start response omitted thread.id")
-        return thread_id
+        return thread_id, previous_thread_id
 
     def _refresh(
         self,
@@ -253,6 +273,8 @@ class OrchestratorRuntime:
         cwd: Path,
         profile: str,
     ) -> dict[str, Any]:
+        if metadata.get("status") == "reconciliation_required":
+            return metadata
         response = rpc.request(
             "thread/read",
             {"threadId": metadata["thread_id"], "includeTurns": True},
@@ -273,7 +295,36 @@ class OrchestratorRuntime:
         if response_text is not None:
             refreshed["last_response"] = response_text
         if status == "active":
-            refreshed["status"] = "active"
+            active_turns = [
+                turn
+                for turn in turns
+                if isinstance(turn, dict)
+                and turn.get("status") in {"inProgress", "active", "running"}
+            ]
+            active_id = (
+                active_turns[0].get("id") if len(active_turns) == 1 else None
+            )
+            known_id = refreshed.get("active_turn_id")
+            if len(active_turns) > 1:
+                refreshed["status"] = "reconciliation_required"
+                refreshed["error"] = "active thread response contained multiple active turns"
+            elif isinstance(active_id, str) and active_id and known_id not in (
+                None,
+                active_id,
+            ):
+                refreshed["status"] = "reconciliation_required"
+                refreshed["error"] = (
+                    "active turn id mismatch: "
+                    f"metadata={known_id!r}, server={active_id!r}"
+                )
+            elif isinstance(active_id, str) and active_id:
+                refreshed["active_turn_id"] = active_id
+                refreshed["status"] = "active"
+            elif isinstance(known_id, str) and known_id:
+                refreshed["status"] = "active"
+            else:
+                refreshed["status"] = "reconciliation_required"
+                refreshed["error"] = "active thread response omitted active turn id"
         elif last_status in {"failed", "interrupted"}:
             if refreshed.get("reconciled_turn_id") == last_id:
                 refreshed["status"] = "idle"
@@ -358,6 +409,20 @@ class OrchestratorRuntime:
             raise RuntimeErrorBase("orchestrator metadata cwd mismatch")
         if metadata.get("profile") != profile:
             raise RuntimeErrorBase("orchestrator metadata profile mismatch")
+
+    @staticmethod
+    def _refuse_unreconciled(metadata: Mapping[str, Any]) -> None:
+        if metadata.get("status") == "reconciliation_required":
+            raise ReconciliationRequired(
+                "orchestrator requires explicit reconciliation acknowledgement"
+            )
+
+    @staticmethod
+    def _active_turn_id(metadata: Mapping[str, Any]) -> str:
+        turn_id = metadata.get("active_turn_id")
+        if not isinstance(turn_id, str) or not turn_id:
+            raise RuntimeErrorBase("active orchestrator turn id is unavailable")
+        return turn_id
 
     def _metadata(
         self, thread_id: str, cwd: Path, profile: str, status: str

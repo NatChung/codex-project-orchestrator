@@ -92,7 +92,7 @@ cpo doctor --probe
 cpo orch
 ```
 
-新增專案需在 `settings.toml` 的 `[workers.<id>]` 設定 `cwd` 與 `profile = "worker-<id>"`。專案 ID 使用小寫字母、數字與連字號，開頭須為字母。
+新增專案需在 `settings.toml` 的 `[workers.<id>]` 設定 `cwd` 與 `profile = "worker-<id>"`。專案 ID 使用小寫字母、數字與連字號，開頭須為字母；`orchestrator`、`operator`、`orch` 與 `local` 是控制面保留名稱，不能作為 worker ID。
 
 `worktree_root` 預設是 Orch workspace 同層的 `worktrees` 資料夾，可在 `settings.toml` 指定另一個不與專案、state 或 credential 目錄重疊的 canonical absolute path。變更後同樣要 apply、重啟並重新 probe。
 
