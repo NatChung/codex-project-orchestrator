@@ -9,7 +9,9 @@ Codex Project Orchestrator 的目標是在同一位可信 operator 的作業系�
 - 註冊專案被標成 untrusted，以略過專案自己的 Codex config。Codex 仍會在任務中讀取 repo-local `AGENTS.md`；因此應將它視為指示資料，而不是 permission policy。
 - MCP server 在 shell sandbox 之外執行。Shell 的檔案或網路限制不會自動套用到 MCP 實作，所以 adapter 必須只公開固定工具，並在 server 端綁定角色、驗證收件者與 task correlation，避免提供任意檔案或任意 SQL 介面。
 
-`cpo ask` 是 operator 端的非互動式 Orch 入口。它透過標準輸入把 prompt 傳給使用專用 Codex home 的 `codex exec`，仍套用 `orch` permission profile 與固定角色 MCP；它不繼承呼叫端 Codex session 的檔案權限。每次呼叫建立新的 Orch session，並以 operator-owned lock 避免多個 `ask` 同時競爭同一個 orchestrator mailbox；它不控制或續接另一個互動式終端機 session。
+`cpo ask` 與 operator MCP 是 operator 端的 persistent Orch 控制入口。兩者只透過 app server 對保存的 Orch thread 執行 turn；該 thread 仍套用 `orch` permission profile 與固定角色 `project_agents` MCP，不繼承呼叫端 Codex session 的檔案權限。Operator MCP 不公開 mailbox、任意 role 或任意 thread ID，只能 send、status、wait、read result、steer、interrupt，以及在人工核對後 acknowledge reconciliation。Operator-owned lock 序列化狀態變更；等待不持有 lock，因此仍可 steer 或 interrupt。
+
+Orch thread ID、active turn ID、最後結果、控制面設定 fingerprint 與 reconciliation 狀態保存在 private runtime state。權限、MCP 或 thread 參數變更時會建立新的 Orch thread，避免續接仍保留舊工具集合的 thread。`turn/start` 後連線中斷屬於不確定操作，系統拒絕自動重送。Operator 必須先核對 mailbox、worker 與 thread 狀態，再留下 reconciliation note；這個 acknowledgement 只解除重送阻擋，不宣稱先前副作用不存在。
 
 ## Runtime state 與工具面
 
@@ -33,6 +35,10 @@ Mailbox 以參數化 SQL 與固定 schema 實作，不接受呼叫者提供任�
 每套安裝必須以真實 Codex sandbox 做正向與反向測試：自己 repo 可寫、受保護子目錄不可寫、其他 repo 與 state 不可讀寫，以及 shell 的 loopback TCP／私有 app socket 連線遭拒。只有 `EPERM`／`EACCES` 算拒絕證據，連線逾時或拒絕連線不足以證明 sandbox 生效。實際首版結果見 [驗證紀錄](verification.md)。
 
 成功的 doctor probe 會寫入綁定 compiled config SHA-256 與目前 service PID 的 receipt。Orchestrator 在喚醒 worker 前會核對 receipt、現行 compiled config 與 service；receipt 缺失、失敗、設定不符或 service 已更換時拒絕 dispatch。Receipt 只證明該次 probe 實際涵蓋且通過的項目，不能延伸成未測安全性質的證明。
+
+動態 worktree worker 不把執行中產生的新 profile 熱加到全域設定。初始化時會為每個 base project 編譯固定的 `worktree-<project>` profile；目前 worktree cwd 由 Codex 當作該回合的 workspace root。每次 worker turn 前，runtime 以 App Server `command/exec` probe 該回合即將使用的同一個 permission profile 與 cwd，通過後才把它傳給 `turn/start`。Probe 測試 worktree 與 Git metadata 可讀寫、base checkout／其他 worker／Orch workspace／state 不可讀寫、受保護路徑不可寫，以及 loopback TCP／app socket 不可連線。沒有 receipt 的靜態 base 設定或動態 probe 失敗時都拒絕派工。
+
+Git linked worktree 的 `.git` 是指向 base repo metadata 的控制檔。為了讓 worker 可以 commit，動態 policy 必須允許寫自己的 worktree control directory 與共用 Git common directory；objects 與 refs 因而仍與 base checkout 及其他 linked worktree 共用。Source working tree 本身仍在 restricted read 範圍之外。這個邊界防止直接跨 working tree 讀寫，不能宣稱提供互相獨立的 Git object／ref storage，也不能阻止同一 repo 中 Git metadata 層面的互相影響。Shell network 維持關閉，因此 worker 不會自行 push。
 
 macOS live 測試發現路徑相關限制：系統 temporary directory 內的測試專案及 state 出現跨角色存取仍被允許的結果，doctor 正確判為失敗。一般 home 專案目錄則通過檔案、保護目錄與連線拒絕檢查。建議使用一般 home 專案目錄，不要將控制資料或註冊專案放在系統 temporary directory。這份工具不能修正作業系統或 Codex 的 sandbox 差異；無法證明隔離時便停止派工。
 

@@ -6,6 +6,7 @@ import unittest
 from collections import deque
 from pathlib import Path
 from typing import Any, Self
+from unittest.mock import patch
 
 from codex_project_orchestrator.runtime import (
     RPC,
@@ -217,6 +218,43 @@ class RuntimeTests(unittest.TestCase):
             rpc.calls,
             [("thread/read", {"threadId": "thread-1", "includeTurns": False})],
         )
+
+    def test_dynamic_worker_probes_and_uses_same_permission_profile(self) -> None:
+        configured = make_settings(self.root)
+        cwd = configured["workers"]["alpha"]["cwd"]
+        dynamic = {
+            "alpha": {
+                "worker_id": "alpha",
+                "cwd": cwd,
+                "profile": "worktree-alpha",
+                "model": "synthetic-dynamic",
+                "dynamic_worktree": True,
+                "git_common_dir": str(self.root / "git-common"),
+                "git_control_dir": str(self.root / "git-control"),
+            }
+        }
+        rpc = FakeRPC(
+            {
+                "thread/start": app_response(cwd, profile="worktree-alpha"),
+                "turn/start": {"turn": {}},
+            }
+        )
+        with (
+            patch(
+                "codex_project_orchestrator.worktrees.effective_workers",
+                return_value=dynamic,
+            ),
+            patch("codex_project_orchestrator.doctor.probe_worktree") as probe,
+        ):
+            Runtime(
+                configured, self.root / "dynamic-state", rpc_factory=factory(rpc)
+            ).wake("alpha")
+        probe.assert_called_once()
+        started = rpc.calls[0][1]
+        turn = rpc.calls[1][1]
+        self.assertEqual(started["permissions"], "worktree-alpha")
+        self.assertEqual(turn["permissions"], "worktree-alpha")
+        self.assertNotIn("sandboxPolicy", turn)
 
     def test_failed_turn_requires_reconciliation(self) -> None:
         configured = make_settings(self.root)

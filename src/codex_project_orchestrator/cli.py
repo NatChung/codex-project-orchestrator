@@ -34,6 +34,7 @@ def parser():
     sub.add_parser("orch", help="Open an interactive orchestrator in the dedicated home")
     ask = sub.add_parser("ask", help="Run one non-interactive orchestrator prompt")
     ask.add_argument("prompt", nargs="?", help="Prompt text; omit to read it from stdin")
+    ask.add_argument("--timeout", type=float, default=1200, help="Maximum seconds to wait for completion")
     doctor = sub.add_parser("doctor", help="Check config and optionally probe actual sandbox access")
     doctor.add_argument("--probe", action="store_true")
     mcp = sub.add_parser("mcp", help="Internal fixed-role MCP entrypoint")
@@ -107,15 +108,15 @@ def run(args):
         prompt = args.prompt if args.prompt is not None else sys.stdin.read()
         if not prompt.strip():
             raise ValueError("Provide an orchestrator prompt as an argument or on stdin")
-        command = [settings["codex"], "exec", "--cd", settings["orchestrator"]["cwd"],
-                   "--skip-git-repo-check", "-"]
-        with FileLock(str(state / "orchestrator-exec.lock"), timeout=10):
-            completed = subprocess.run(
-                command, input=prompt, text=True, env=services.environment(state)
-            )
-        if completed.returncode:
-            raise RuntimeError("Non-interactive orchestrator prompt failed")
-        return None
+        from .orchestrator import OrchestratorRuntime
+        runtime = OrchestratorRuntime(settings, state)
+        runtime.prompt(prompt)
+        result = runtime.wait(args.timeout)
+        if result.get("status") == "active":
+            raise RuntimeError("Orchestrator is still active after the wait timeout")
+        if result.get("status") == "reconciliation_required":
+            raise RuntimeError("Orchestrator turn requires manual reconciliation")
+        return {"orchestrator": result}
     if args.command == "doctor":
         from .doctor import diagnose
         return diagnose(settings, state, args.probe)

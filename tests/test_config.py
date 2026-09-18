@@ -31,6 +31,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(original.read_text(), 'existing project rules')
         self.assertEqual(list(self.beta.iterdir()), [])
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(settings['worktree_root'], str(self.root / 'worktrees'))
 
     def test_profiles_and_external_state(self):
         config = tomllib.loads(compiled(self.initialize(), self.state))
@@ -42,6 +43,24 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(fs[str(self.state)], 'deny')
         self.assertEqual(fs[str(self.alpha / '.codex')], 'read')
         self.assertEqual(config['projects'][str(self.alpha)]['trust_level'], 'untrusted')
+        worktree = config['permissions']['worktree-alpha']
+        self.assertFalse(worktree['network']['enabled'])
+        self.assertEqual(worktree['filesystem'][str(self.alpha)], 'deny')
+        self.assertEqual(worktree['filesystem'][str(self.alpha / '.git')], 'write')
+        self.assertEqual(worktree['filesystem'][':workspace_roots']['.'], 'write')
+        self.assertEqual(worktree['filesystem'][':workspace_roots']['.git'], 'read')
+        tools = config['mcp_servers']['project_agents']['tools']
+        self.assertIn('create_worktree_worker', tools)
+        self.assertIn('list_worktree_workers', tools)
+
+    def test_worktree_root_cannot_overlap_projects_or_state(self):
+        settings = self.initialize()
+        for invalid in (self.alpha, self.state, Path.home()):
+            with self.subTest(invalid=invalid):
+                changed = dict(settings)
+                changed['worktree_root'] = str(invalid)
+                with self.assertRaises(ValueError):
+                    validate(changed, self.state)
 
     def test_reinitialize_refused(self):
         self.initialize()

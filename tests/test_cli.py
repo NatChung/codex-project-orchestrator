@@ -5,7 +5,6 @@ import tomllib
 import unittest
 from io import StringIO
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from codex_project_orchestrator import cli
@@ -126,26 +125,23 @@ class CliSettingsTests(unittest.TestCase):
         self.assertEqual(config_before, config_path.read_bytes())
         self.assertEqual("isolated", load(self.state)["mode"])
 
-    def test_ask_runs_prompt_in_dedicated_orchestrator(self) -> None:
+    def test_ask_runs_prompt_on_persistent_orchestrator(self) -> None:
         args = self.args("ask", "delegate the synthetic task")
+        completed = {
+            "identity": "orchestrator",
+            "thread_id": "thread-1",
+            "status": "idle",
+            "last_response": "done",
+        }
         with (
             patch("codex_project_orchestrator.services.status", return_value={"ready": True}),
             patch("codex_project_orchestrator.cli.require_probe"),
-            patch(
-                "codex_project_orchestrator.cli.subprocess.run",
-                return_value=SimpleNamespace(returncode=0),
-            ) as run,
+            patch("codex_project_orchestrator.orchestrator.OrchestratorRuntime") as runtime,
         ):
-            self.assertIsNone(cli.run(args))
-        command = run.call_args.args[0]
-        self.assertEqual(command[1:3], ["exec", "--cd"])
-        self.assertEqual(command[3], str(self.orchestrator))
-        self.assertIn("--skip-git-repo-check", command)
-        self.assertEqual(run.call_args.kwargs["input"], "delegate the synthetic task")
-        self.assertEqual(
-            run.call_args.kwargs["env"]["CODEX_HOME"],
-            str(self.state / "codex-home"),
-        )
+            runtime.return_value.wait.return_value = completed
+            self.assertEqual(cli.run(args), {"orchestrator": completed})
+        runtime.return_value.prompt.assert_called_once_with("delegate the synthetic task")
+        runtime.return_value.wait.assert_called_once_with(1200)
 
     def test_ask_reads_stdin_and_rejects_empty_prompt(self) -> None:
         args = self.args("ask")

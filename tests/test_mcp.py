@@ -32,6 +32,8 @@ class McpRoleTests(unittest.IsolatedAsyncioTestCase):
             orchestrator_tools = {tool.name for tool in await client.list_tools()}
         async with Client(build(self.state, "alpha")) as client:
             worker_tools = {tool.name for tool in await client.list_tools()}
+        async with Client(build(self.state, "operator")) as client:
+            operator_tools = {tool.name for tool in await client.list_tools()}
 
         common = {
             "list_workers",
@@ -39,8 +41,29 @@ class McpRoleTests(unittest.IsolatedAsyncioTestCase):
             "fetch_inbox",
             "acknowledge_message",
         }
-        self.assertEqual(common | {"check_worker_inbox", "worker_status"}, orchestrator_tools)
+        self.assertEqual(
+            common
+            | {
+                "check_worker_inbox",
+                "worker_status",
+                "create_worktree_worker",
+                "list_worktree_workers",
+            },
+            orchestrator_tools,
+        )
         self.assertEqual(common, worker_tools)
+        self.assertEqual(
+            {
+                "send_orchestrator_prompt",
+                "orchestrator_status",
+                "wait_orchestrator",
+                "read_orchestrator_result",
+                "steer_orchestrator",
+                "interrupt_orchestrator",
+                "acknowledge_orchestrator_reconciliation",
+            },
+            operator_tools,
+        )
 
     async def test_inbox_and_acknowledgement_are_bound_to_server_role(self) -> None:
         async with Client(build(self.state, "orchestrator")) as client:
