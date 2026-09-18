@@ -10,7 +10,18 @@ import tempfile
 import tomllib
 
 ID = re.compile(r"[a-z][a-z0-9-]{0,47}\Z")
+RESERVED_WORKER_IDS = {"orchestrator", "operator", "orch", "local"}
 TESTED_CODEX = "0.154.0"
+ORCH_MODEL = "gpt-6-astra"
+WORKER_MODEL = "gpt-5.6-sol"
+
+
+def role_model(settings, role):
+    spec = settings["orchestrator"] if role == "orchestrator" else settings["workers"][role]
+    model = spec.get("model", ORCH_MODEL if role == "orchestrator" else WORKER_MODEL)
+    if not isinstance(model, str) or not model.strip() or model != model.strip():
+        raise ValueError("Role model must be a non-empty model ID: " + role)
+    return model
 
 
 def toml(data):
@@ -61,11 +72,13 @@ def validate(settings, state):
     workers = settings.get("workers", {})
     if not workers:
         raise ValueError("Register at least one project")
+    for worker_id in workers:
+        if not ID.fullmatch(worker_id) or worker_id in RESERVED_WORKER_IDS:
+            raise ValueError("Invalid project ID: " + worker_id)
     roles = {"orchestrator": settings["orchestrator"], **workers}
     seen = []
     for role, spec in roles.items():
-        if role != "orchestrator" and (not ID.fullmatch(role) or role in ("orch", "local")):
-            raise ValueError("Invalid project ID: " + role)
+        role_model(settings, role)
         path = Path(spec["cwd"])
         if not path.is_absolute() or path.resolve() != path or not path.is_dir():
             raise ValueError("Project cwd must be an existing canonical absolute directory: " + str(path))
@@ -85,6 +98,13 @@ def validate(settings, state):
             raise ValueError("Runtime read paths must exist and be canonical")
         if any(overlaps(p, q) for q in seen + [state, Path.home() / ".ssh", Path.home() / ".codex"]):
             raise ValueError("Runtime read path overlaps projects, credentials or runtime state")
+    root = Path(settings.get("worktree_root", str(Path(settings["orchestrator"]["cwd"]).parent / "worktrees")))
+    if not root.is_absolute() or root.resolve() != root or root == Path.home():
+        raise ValueError(
+            "worktree_root must be a canonical absolute directory other than home"
+        )
+    if any(overlaps(root, path) for path in seen + [state, Path.home() / ".ssh", Path.home() / ".codex"]):
+        raise ValueError("worktree_root must not overlap projects, credentials or runtime state")
 
 
 def load(state):
@@ -127,7 +147,25 @@ def compiled(settings, state):
         for protected in (".codex", ".git", ".agents"):
             fs[str(Path(spec["cwd"]) / protected)] = "read"
         profiles[spec["profile"]] = {"filesystem": fs, "network": {"enabled": False}}
+    for role, spec in settings["workers"].items():
+        fs = {":minimal": "read", str(Path.home()): "deny", str(state): "deny"}
+        for p in settings.get("runtime_read", []):
+            fs[p] = "read"
+        for p in all_paths:
+            fs[p] = "deny"
+        fs[str(Path(spec["cwd"]) / ".git")] = "write"
+        fs[":workspace_roots"] = {
+            ".": "write",
+            ".codex": "read",
+            ".git": "read",
+            ".agents": "read",
+        }
+        profiles["worktree-" + role] = {
+            "filesystem": fs,
+            "network": {"enabled": False},
+        }
     result = {
+        "model": role_model(settings, "orchestrator"),
         "default_permissions": "orch" if settings["mode"] == "isolated" else ":danger-full-access",
         "approval_policy": "never",
         "web_search": "disabled",
@@ -150,7 +188,9 @@ def compiled(settings, state):
             "startup_timeout_sec": 30,
             "tool_timeout_sec": 120,
             "tools": {name: {"approval_mode": "approve"} for name in (
-                "list_workers", "send_message", "fetch_inbox", "acknowledge_message", "check_worker_inbox", "worker_status"
+                "list_workers", "send_message", "fetch_inbox", "acknowledge_message",
+                "check_worker_inbox", "worker_status", "create_worktree_worker",
+                "list_worktree_workers"
             )},
         }},
     }
@@ -167,6 +207,12 @@ check_worker_inbox to start or wake its independent worker.
 Inspect worker_status and fetch_inbox when needed. Match project and task_id,
 verify evidence, save the useful result in this workspace, then acknowledge the
 reply. Separate queued, running, reported, verified and accepted states.
+
+For parallel isolated work in one registered Git project, create a detached
+worktree lease with create_worktree_worker(project, task_id, ref), then address
+the returned worker_id with send_message and check_worker_inbox. Reusing the same
+project, task_id and ref is idempotent. Keep cross-service changes that must be
+tested and committed together in one worktree worker.
 
 Project files belong to their workers. A tool or sandbox rejection is a boundary;
 return its exact error and the smallest needed operator decision. Ask the operator
@@ -187,15 +233,21 @@ def initialize(state, orch, projects, runtime_read=()):
     workers = {}
     for entry in projects:
         role, sep, raw = entry.partition("=")
-        if not sep or role == "orchestrator" or role in workers or not ID.fullmatch(role):
+        if (
+            not sep
+            or role in RESERVED_WORKER_IDS
+            or role in workers
+            or not ID.fullmatch(role)
+        ):
             raise ValueError("Use unique --project id=/absolute/path entries")
-        workers[role] = {"cwd": str(Path(raw).expanduser().resolve()), "profile": "worker-" + role}
+        workers[role] = {"cwd": str(Path(raw).expanduser().resolve()), "profile": "worker-" + role, "model": WORKER_MODEL}
     # Validate before writing, except that the fresh orchestrator workspace must exist.
     created = not orch.exists()
     orch.mkdir(parents=True, exist_ok=True)
     settings = {"mode": "isolated", "python": sys.executable, "codex": shutil.which("codex") or "codex",
+                "worktree_root": str(orch.parent / "worktrees"),
                 "runtime_read": list(dict.fromkeys([str(Path(sys.base_prefix).resolve()), *[str(Path(p).expanduser().resolve()) for p in runtime_read]])),
-                "orchestrator": {"cwd": str(orch), "profile": "orch"}, "workers": workers}
+                "orchestrator": {"cwd": str(orch), "profile": "orch", "model": ORCH_MODEL}, "workers": workers}
     try:
         validate(settings, state)
     except Exception:
