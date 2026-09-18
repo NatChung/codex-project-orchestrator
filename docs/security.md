@@ -9,6 +9,8 @@ Codex Project Orchestrator 的目標是在同一位可信 operator 的作業系�
 - 註冊專案被標成 untrusted，以略過專案自己的 Codex config。Codex 仍會在任務中讀取 repo-local `AGENTS.md`；因此應將它視為指示資料，而不是 permission policy。
 - MCP server 在 shell sandbox 之外執行。Shell 的檔案或網路限制不會自動套用到 MCP 實作，所以 adapter 必須只公開固定工具，並在 server 端綁定角色、驗證收件者與 task correlation，避免提供任意檔案或任意 SQL 介面。
 
+`cpo ask` 是 operator 端的非互動式 Orch 入口。它透過標準輸入把 prompt 傳給使用專用 Codex home 的 `codex exec`，仍套用 `orch` permission profile 與固定角色 MCP；它不繼承呼叫端 Codex session 的檔案權限。每次呼叫建立新的 Orch session，並以 operator-owned lock 避免多個 `ask` 同時競爭同一個 orchestrator mailbox；它不控制或續接另一個互動式終端機 session。
+
 ## Runtime state 與工具面
 
 Runtime state 由 operator 擁有，目錄應為 private，資料庫與敏感設定檔應只允許 owner 讀寫。各 Codex permission profile 會拒絕 session 直接讀寫 runtime state；session 只能經 role-bound adapter 使用必要操作。
@@ -39,6 +41,8 @@ macOS live 測試發現路徑相關限制：系統 temporary directory 內的測
 `local` 模式刻意提供完整本機存取，只能透過明確的 CLI flag 選擇。它適合 operator 已接受完整存取風險的情況，不能描述成與 `isolated` 相同的安全邊界。
 
 permission 或 mode 變更不是 hot reload。Operator 必須停止相關 app-server／session，再以新設定建立新 session。繼續使用舊 session 可能保留舊權限，不能用設定檔已更新來推定邊界已生效。
+
+角色的 `model` 設定只選擇模型，不授予或撤銷任何權限。Worker 在建立／續接 thread 及啟動新回合時傳入設定的模型；活躍回合不會被中斷以套用新設定。直接在其他 Codex home 或桌面版啟動的對話不受本工具產生的 TOML 管理。
 
 ## 崩潰、重送與副作用
 

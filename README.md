@@ -37,6 +37,20 @@ cpo doctor --probe
 cpo orch
 ```
 
+若要從另一個本機 session 交辦一次完整工作，不必控制既有的互動式終端機。`cpo ask` 會在專用 Codex home 中啟動一個非互動式 Orch 回合，沿用相同的 `orch` 權限與 `project_agents` MCP，並在回合完成後把輸出寫回目前的終端機：
+
+```sh
+cpo ask '請 kc-storefront worker 唯讀確認測試入口，附上路徑與執行證據。'
+```
+
+也可以從標準輸入提供 prompt：
+
+```sh
+cpo ask < task.txt
+```
+
+每次 `ask` 都是新的 Orch session，不會接管或續接已開啟的互動式 `cpo orch` 對話。Prompt 應包含完整目標、允許動作、限制、證據與完成條件；同一套 state 的 `ask` 回合會串行執行。
+
 若既有 Codex 使用檔案儲存登入資訊，可用 `cpo login --reuse-current` 取代登入。它建立指向原有 credential file 的本機 symlink，不會顯示或複製 token；原登入更新也會生效。使用 keychain 的環境請在專用 home 重新登入。
 
 初始化會將目前 Python runtime 加入唯讀例外，供診斷指令使用。其他工具鏈位於受限 home 內或非標準路徑時，在 init 加上精確的 `--runtime-read /absolute/toolchain/path`。這是所有角色共用的唯讀例外；不要指定整個 home、專案或 credential 目錄。`doctor --probe` 不通過時無法派工，請先檢查原因。建議使用一般 home 下的專案目錄；macOS 暫存目錄的特殊允許規則可能讓隔離檢查失敗。
@@ -67,6 +81,27 @@ cpo orch
 ```
 
 新增專案需在 `settings.toml` 的 `[workers.<id>]` 設定 `cwd` 與 `profile = "worker-<id>"`。專案 ID 使用小寫字母、數字與連字號，開頭須為字母。
+
+模型按角色指定：Orch 預設 `gpt-6-astra`，所有 worker 預設 `gpt-5.6-sol`。
+初始化會將 `model` 寫入各角色設定；舊設定省略此欄位時也使用上述預設。
+可在既有角色區段內調整，例如：
+
+```toml
+[orchestrator]
+cwd = "/synthetic/orch"
+profile = "orch"
+model = "gpt-6-astra"
+
+[workers.alpha]
+cwd = "/synthetic/alpha"
+profile = "worker-alpha"
+model = "gpt-5.6-sol"
+```
+
+Orch 從專用 Codex home 的設定讀取模型；worker 在 thread start／resume 與每次 turn start 明確指定模型。
+變更後依上述 stop → apply → start → doctor → orch 流程重啟；正在執行的回合不會切換模型。
+帳號及 Codex 版本必須支援指定模型。本工具不會自動替換不可用的模型。
+這些設定只作用於本工具啟動的 session；直接在 Codex 桌面版開啟本 repo 的對話不會自動套用。
 
 ```sh
 cpo stop

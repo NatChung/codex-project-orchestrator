@@ -32,6 +32,8 @@ def parser():
     login = sub.add_parser("login", help="Authenticate the dedicated Codex home")
     login.add_argument("--reuse-current", action="store_true", help="Link the current Codex file credential; never print it")
     sub.add_parser("orch", help="Open an interactive orchestrator in the dedicated home")
+    ask = sub.add_parser("ask", help="Run one non-interactive orchestrator prompt")
+    ask.add_argument("prompt", nargs="?", help="Prompt text; omit to read it from stdin")
     doctor = sub.add_parser("doctor", help="Check config and optionally probe actual sandbox access")
     doctor.add_argument("--probe", action="store_true")
     mcp = sub.add_parser("mcp", help="Internal fixed-role MCP entrypoint")
@@ -96,6 +98,24 @@ def run(args):
         if settings["mode"] == "isolated":
             require_probe(settings, state)
         os.execvpe(settings["codex"], [settings["codex"], "--cd", settings["orchestrator"]["cwd"]], services.environment(state))
+    if args.command == "ask":
+        if settings["mode"] != "isolated":
+            raise RuntimeError("Non-interactive orchestrator prompts require isolated mode")
+        if not services.status(state)["ready"]:
+            raise RuntimeError("Start the worker service first")
+        require_probe(settings, state)
+        prompt = args.prompt if args.prompt is not None else sys.stdin.read()
+        if not prompt.strip():
+            raise ValueError("Provide an orchestrator prompt as an argument or on stdin")
+        command = [settings["codex"], "exec", "--cd", settings["orchestrator"]["cwd"],
+                   "--skip-git-repo-check", "-"]
+        with FileLock(str(state / "orchestrator-exec.lock"), timeout=10):
+            completed = subprocess.run(
+                command, input=prompt, text=True, env=services.environment(state)
+            )
+        if completed.returncode:
+            raise RuntimeError("Non-interactive orchestrator prompt failed")
+        return None
     if args.command == "doctor":
         from .doctor import diagnose
         return diagnose(settings, state, args.probe)

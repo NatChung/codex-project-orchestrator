@@ -165,6 +165,8 @@ class RuntimeTests(unittest.TestCase):
         persisted = json.loads((state / "worker-alpha.json").read_text())
         self.assertEqual(persisted["thread_id"], "thread-1")
         params = first.calls[0][1]
+        self.assertEqual(params["model"], "gpt-5.6-sol")
+        self.assertEqual(first.calls[1][1]["model"], "gpt-5.6-sol")
         self.assertEqual(params["permissions"], "worker-alpha")
         self.assertEqual(params["approvalPolicy"], "never")
         self.assertEqual(
@@ -186,7 +188,10 @@ class RuntimeTests(unittest.TestCase):
                 "turn/start": {"turn": {}},
             }
         )
+        configured["workers"]["alpha"]["model"] = "synthetic-worker-override"
         Runtime(configured, state, rpc_factory=factory(second)).wake("alpha")
+        self.assertEqual(second.calls[1][1]["model"], "synthetic-worker-override")
+        self.assertEqual(second.calls[2][1]["model"], "synthetic-worker-override")
         self.assertEqual(
             [item[0] for item in second.calls],
             ["thread/read", "thread/resume", "turn/start"],

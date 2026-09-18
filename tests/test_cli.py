@@ -3,7 +3,9 @@ from __future__ import annotations
 import tempfile
 import tomllib
 import unittest
+from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from codex_project_orchestrator import cli
@@ -123,6 +125,37 @@ class CliSettingsTests(unittest.TestCase):
         self.assertEqual(settings_before, settings_path.read_bytes())
         self.assertEqual(config_before, config_path.read_bytes())
         self.assertEqual("isolated", load(self.state)["mode"])
+
+    def test_ask_runs_prompt_in_dedicated_orchestrator(self) -> None:
+        args = self.args("ask", "delegate the synthetic task")
+        with (
+            patch("codex_project_orchestrator.services.status", return_value={"ready": True}),
+            patch("codex_project_orchestrator.cli.require_probe"),
+            patch(
+                "codex_project_orchestrator.cli.subprocess.run",
+                return_value=SimpleNamespace(returncode=0),
+            ) as run,
+        ):
+            self.assertIsNone(cli.run(args))
+        command = run.call_args.args[0]
+        self.assertEqual(command[1:3], ["exec", "--cd"])
+        self.assertEqual(command[3], str(self.orchestrator))
+        self.assertIn("--skip-git-repo-check", command)
+        self.assertEqual(run.call_args.kwargs["input"], "delegate the synthetic task")
+        self.assertEqual(
+            run.call_args.kwargs["env"]["CODEX_HOME"],
+            str(self.state / "codex-home"),
+        )
+
+    def test_ask_reads_stdin_and_rejects_empty_prompt(self) -> None:
+        args = self.args("ask")
+        with (
+            patch("codex_project_orchestrator.services.status", return_value={"ready": True}),
+            patch("codex_project_orchestrator.cli.require_probe"),
+            patch("sys.stdin", StringIO("  ")),
+        ):
+            with self.assertRaisesRegex(ValueError, "Provide an orchestrator prompt"):
+                cli.run(args)
 
 
 if __name__ == "__main__":

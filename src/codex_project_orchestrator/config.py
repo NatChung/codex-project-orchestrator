@@ -11,6 +11,16 @@ import tomllib
 
 ID = re.compile(r"[a-z][a-z0-9-]{0,47}\Z")
 TESTED_CODEX = "0.154.0"
+ORCH_MODEL = "gpt-6-astra"
+WORKER_MODEL = "gpt-5.6-sol"
+
+
+def role_model(settings, role):
+    spec = settings["orchestrator"] if role == "orchestrator" else settings["workers"][role]
+    model = spec.get("model", ORCH_MODEL if role == "orchestrator" else WORKER_MODEL)
+    if not isinstance(model, str) or not model.strip() or model != model.strip():
+        raise ValueError("Role model must be a non-empty model ID: " + role)
+    return model
 
 
 def toml(data):
@@ -64,6 +74,7 @@ def validate(settings, state):
     roles = {"orchestrator": settings["orchestrator"], **workers}
     seen = []
     for role, spec in roles.items():
+        role_model(settings, role)
         if role != "orchestrator" and (not ID.fullmatch(role) or role in ("orch", "local")):
             raise ValueError("Invalid project ID: " + role)
         path = Path(spec["cwd"])
@@ -128,6 +139,7 @@ def compiled(settings, state):
             fs[str(Path(spec["cwd"]) / protected)] = "read"
         profiles[spec["profile"]] = {"filesystem": fs, "network": {"enabled": False}}
     result = {
+        "model": role_model(settings, "orchestrator"),
         "default_permissions": "orch" if settings["mode"] == "isolated" else ":danger-full-access",
         "approval_policy": "never",
         "web_search": "disabled",
@@ -189,13 +201,13 @@ def initialize(state, orch, projects, runtime_read=()):
         role, sep, raw = entry.partition("=")
         if not sep or role == "orchestrator" or role in workers or not ID.fullmatch(role):
             raise ValueError("Use unique --project id=/absolute/path entries")
-        workers[role] = {"cwd": str(Path(raw).expanduser().resolve()), "profile": "worker-" + role}
+        workers[role] = {"cwd": str(Path(raw).expanduser().resolve()), "profile": "worker-" + role, "model": WORKER_MODEL}
     # Validate before writing, except that the fresh orchestrator workspace must exist.
     created = not orch.exists()
     orch.mkdir(parents=True, exist_ok=True)
     settings = {"mode": "isolated", "python": sys.executable, "codex": shutil.which("codex") or "codex",
                 "runtime_read": list(dict.fromkeys([str(Path(sys.base_prefix).resolve()), *[str(Path(p).expanduser().resolve()) for p in runtime_read]])),
-                "orchestrator": {"cwd": str(orch), "profile": "orch"}, "workers": workers}
+                "orchestrator": {"cwd": str(orch), "profile": "orch", "model": ORCH_MODEL}, "workers": workers}
     try:
         validate(settings, state)
     except Exception:

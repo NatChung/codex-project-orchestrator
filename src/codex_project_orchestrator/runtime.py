@@ -20,6 +20,8 @@ from typing import Any, Never, Self
 
 from filelock import FileLock
 
+from .config import role_model
+
 
 class RuntimeErrorBase(RuntimeError):
     """Base class for errors callers may safely present to an operator."""
@@ -268,6 +270,7 @@ class Runtime:
                 "turn/start",
                 {
                     "threadId": thread_id,
+                    "model": common["model"],
                     "input": [{"type": "text", "text": _WAKE_PROMPT}],
                     "cwd": str(cwd),
                     "permissions": profile,
@@ -347,6 +350,7 @@ class Runtime:
             raise RuntimeErrorBase("settings.python must be an absolute path")
         return {
             "cwd": str(cwd),
+            "model": role_model(self.settings, project),
             "permissions": profile,
             "approvalPolicy": "never",
             "developerInstructions": _DEVELOPER_INSTRUCTIONS,

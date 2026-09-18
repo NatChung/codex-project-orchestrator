@@ -5,7 +5,7 @@ import tomllib
 import unittest
 from pathlib import Path
 
-from codex_project_orchestrator.config import compiled, initialize, load, require_probe
+from codex_project_orchestrator.config import compiled, initialize, load, require_probe, role_model, validate
 
 
 class ConfigTests(unittest.TestCase):
@@ -47,6 +47,24 @@ class ConfigTests(unittest.TestCase):
         self.initialize()
         with self.assertRaises(ValueError):
             self.initialize()
+
+    def test_role_models_defaults_overrides_and_legacy_settings(self):
+        settings = self.initialize()
+        self.assertEqual(settings['orchestrator']['model'], 'gpt-6-astra')
+        self.assertEqual(settings['workers']['alpha']['model'], 'gpt-5.6-sol')
+        self.assertEqual(tomllib.loads(compiled(settings, self.state))['model'], 'gpt-6-astra')
+        settings['orchestrator']['model'] = 'synthetic-orch'
+        settings['workers']['alpha']['model'] = 'synthetic-worker'
+        self.assertEqual(tomllib.loads(compiled(settings, self.state))['model'], 'synthetic-orch')
+        self.assertEqual(role_model(settings, 'alpha'), 'synthetic-worker')
+        del settings['workers']['alpha']['model']
+        self.assertEqual(role_model(settings, 'alpha'), 'gpt-5.6-sol')
+        del settings['orchestrator']['model']
+        self.assertEqual(role_model(settings, 'orchestrator'), 'gpt-6-astra')
+        for invalid in ('', '  ', ' padded ', None, 123):
+            settings['workers']['alpha']['model'] = invalid
+            with self.assertRaises(ValueError):
+                validate(settings, self.state)
 
     def test_overlapping_projects_refused(self):
         child = self.alpha / 'child'
