@@ -320,8 +320,6 @@ class OrchestratorRuntime:
             elif isinstance(active_id, str) and active_id:
                 refreshed["active_turn_id"] = active_id
                 refreshed["status"] = "active"
-            elif isinstance(known_id, str) and known_id:
-                refreshed["status"] = "active"
             else:
                 refreshed["status"] = "reconciliation_required"
                 refreshed["error"] = "active thread response omitted active turn id"
@@ -446,11 +444,11 @@ class OrchestratorRuntime:
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode()).hexdigest()
 
-    def _service_generation(self) -> int | None:
+    def _service_generation(self) -> str | None:
         try:
             value = json.loads((self.state / "service.json").read_text())
-            pid = value.get("pid") if isinstance(value, dict) else None
-            return pid if isinstance(pid, int) and not isinstance(pid, bool) else None
+            generation = value.get("generation") if isinstance(value, dict) else None
+            return generation if isinstance(generation, str) and generation else None
         except (OSError, json.JSONDecodeError):
             return None
 

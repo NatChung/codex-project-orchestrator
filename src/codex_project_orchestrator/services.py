@@ -5,6 +5,7 @@ from pathlib import Path
 import signal
 import subprocess
 import time
+import uuid
 
 from filelock import FileLock
 
@@ -65,14 +66,23 @@ def start(state):
             child = subprocess.Popen([settings["codex"], "app-server", "--listen", "unix://" + str(sock)],
                                      cwd=state, env=environment(state), stdin=subprocess.DEVNULL,
                                      stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-        atomic(state / "service.json", json.dumps({"pid": child.pid}))
+        generation = uuid.uuid4().hex
+        atomic(
+            state / "service.json",
+            json.dumps({"pid": child.pid, "generation": generation}),
+        )
         for _ in range(80):
             if child.poll() is not None:
                 raise RuntimeError("App server exited; inspect private app-server.log")
             if sock.exists():
                 try:
                     with RPC(sock):
-                        return {"running": True, "ready": True, "pid": child.pid}
+                        return {
+                            "running": True,
+                            "ready": True,
+                            "pid": child.pid,
+                            "generation": generation,
+                        }
                 except (OSError, RuntimeError, TimeoutError):
                     pass
             time.sleep(0.1)

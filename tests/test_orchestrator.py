@@ -151,7 +151,7 @@ class OrchestratorRuntimeTests(unittest.TestCase):
             ["thread/read", "thread/resume", "turn/start"],
         )
 
-    def test_active_status_wins_over_previous_completed_turn(self) -> None:
+    def test_active_status_without_reported_active_turn_reconciles_cached_id(self) -> None:
         initial = FakeRPC(
             {
                 "thread/start": response(self.cwd),
@@ -171,11 +171,11 @@ class OrchestratorRuntimeTests(unittest.TestCase):
                 }
             }
         )
-        result = OrchestratorRuntime(
-            self.settings, self.state, rpc_factory=factory(active)
-        ).status()
-        self.assertEqual(result["status"], "active")
-        self.assertEqual(result["active_turn_id"], "turn-2")
+        with self.assertRaises(ReconciliationRequired):
+            OrchestratorRuntime(
+                self.settings, self.state, rpc_factory=factory(active)
+            ).steer("continue")
+        self.assertEqual([method for method, _ in active.calls], ["thread/read"])
 
     def test_configuration_change_rotates_only_after_old_thread_completes(self) -> None:
         initial = FakeRPC(
@@ -216,7 +216,9 @@ class OrchestratorRuntimeTests(unittest.TestCase):
 
     def test_service_restart_rotates_completed_thread(self) -> None:
         self.state.mkdir()
-        (self.state / "service.json").write_text('{"pid": 101}')
+        (self.state / "service.json").write_text(
+            '{"pid": 101, "generation": "generation-a"}'
+        )
         initial = FakeRPC(
             {
                 "thread/start": response(self.cwd),
@@ -226,7 +228,9 @@ class OrchestratorRuntimeTests(unittest.TestCase):
         OrchestratorRuntime(
             self.settings, self.state, rpc_factory=factory(initial)
         ).prompt("first")
-        (self.state / "service.json").write_text('{"pid": 202}')
+        (self.state / "service.json").write_text(
+            '{"pid": 101, "generation": "generation-b"}'
+        )
         restarted = FakeRPC(
             {
                 "thread/read": {

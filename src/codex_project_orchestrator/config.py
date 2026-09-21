@@ -124,7 +124,14 @@ def require_probe(settings, state):
         if (state / "codex-home/config.toml").read_text() != text:
             raise RuntimeError("Compiled configuration changed; stop, apply and probe again")
         expected = hashlib.sha256(text.encode()).hexdigest()
-        if receipt.get("config_sha256") == expected and receipt.get("service_pid") == service["pid"] and receipt.get("ok") is True:
+        if (
+            receipt.get("config_sha256") == expected
+            and receipt.get("service_pid") == service["pid"]
+            and isinstance(service.get("generation"), str)
+            and service["generation"]
+            and receipt.get("service_generation") == service["generation"]
+            and receipt.get("ok") is True
+        ):
             return
     except (OSError, ValueError, KeyError):
         pass

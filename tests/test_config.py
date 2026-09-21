@@ -129,14 +129,17 @@ class ConfigTests(unittest.TestCase):
         settings = self.initialize()
         with self.assertRaises(RuntimeError):
             require_probe(settings, self.state)
-        (self.state / 'service.json').write_text(json.dumps({'pid': 123}))
-        receipt = {'ok': True, 'service_pid': 123, 'config_sha256': hashlib.sha256(compiled(settings, self.state).encode()).hexdigest()}
+        (self.state / 'service.json').write_text(json.dumps({'pid': 123, 'generation': 'generation-a'}))
+        receipt = {'ok': True, 'service_pid': 123, 'service_generation': 'generation-a', 'config_sha256': hashlib.sha256(compiled(settings, self.state).encode()).hexdigest()}
         (self.state / 'probe.json').write_text(json.dumps(receipt))
         require_probe(settings, self.state)
-        (self.state / 'service.json').write_text(json.dumps({'pid': 124}))
+        (self.state / 'service.json').write_text(json.dumps({'pid': 124, 'generation': 'generation-b'}))
         with self.assertRaises(RuntimeError):
             require_probe(settings, self.state)
-        (self.state / 'service.json').write_text(json.dumps({'pid': 123}))
+        (self.state / 'service.json').write_text(json.dumps({'pid': 123, 'generation': 'generation-b'}))
+        with self.assertRaises(RuntimeError):
+            require_probe(settings, self.state)
+        (self.state / 'service.json').write_text(json.dumps({'pid': 123, 'generation': 'generation-a'}))
         (self.state / 'codex-home/config.toml').write_text('default_permissions = ":danger-full-access"')
         with self.assertRaises(RuntimeError):
             require_probe(settings, self.state)

@@ -74,7 +74,9 @@ class DoctorTests(unittest.TestCase):
         (self.state / "codex-home/config.toml").write_text(
             compiled(self.settings, self.state), encoding="utf-8"
         )
-        (self.state / "service.json").write_text('{"pid": 4321}', encoding="utf-8")
+        (self.state / "service.json").write_text(
+            '{"pid": 4321, "generation": "generation-a"}', encoding="utf-8"
+        )
         self.app_listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.app_listener.bind(str(self.state / "app.sock"))
         self.app_listener.listen(1)
@@ -128,6 +130,7 @@ class DoctorTests(unittest.TestCase):
             self.assertFalse((cwd / ".agents").exists())
         receipt = json.loads((self.state / "probe.json").read_text())
         self.assertEqual(receipt["service_pid"], 4321)
+        self.assertEqual(receipt["service_generation"], "generation-a")
         self.assertTrue(receipt["ok"])
 
     def test_inconclusive_connection_fails_instead_of_counting_as_denied(self) -> None:

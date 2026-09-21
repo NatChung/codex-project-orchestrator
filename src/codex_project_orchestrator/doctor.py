@@ -186,12 +186,14 @@ def diagnose(
         result["ok"] = all(
             _check_passed(check) for row in rows for check in row["checks"]
         )
+        service = json.loads((state / "service.json").read_text())
         receipt = {
             "ok": result["ok"],
             "config_sha256": hashlib.sha256(
                 compiled(settings, state).encode()
             ).hexdigest(),
-            "service_pid": json.loads((state / "service.json").read_text())["pid"],
+            "service_pid": service["pid"],
+            "service_generation": service["generation"],
         }
         atomic(state / "probe.json", json.dumps(receipt))
         return result

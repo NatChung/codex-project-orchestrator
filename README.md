@@ -40,7 +40,7 @@ cpo orch
 若要從另一個本機 session 交辦一次完整工作，不必控制既有的互動式終端機。`cpo ask` 會透過既有 app server 啟動或續接 persistent Orch thread，沿用相同的 `orch` 權限與 `project_agents` MCP，並在回合完成後把結果寫回目前的終端機：
 
 ```sh
-cpo ask '請 kc-storefront worker 唯讀確認測試入口，附上路徑與執行證據。'
+cpo ask '請 alpha worker 唯讀確認測試入口，附上路徑與執行證據。'
 ```
 
 也可以從標準輸入提供 prompt：
