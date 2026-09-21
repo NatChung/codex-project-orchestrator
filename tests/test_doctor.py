@@ -147,6 +147,26 @@ class DoctorTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertFalse(json.loads((self.state / "probe.json").read_text())["ok"])
 
+    def test_service_change_during_probe_writes_no_receipt(self) -> None:
+        changed = False
+
+        def restart_service(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            nonlocal changed
+            if not changed:
+                (self.state / "service.json").write_text(
+                    '{"pid": 4321, "generation": "generation-b"}',
+                    encoding="utf-8",
+                )
+                changed = True
+            return successful(targets)
+
+        FakeRPC.handler = restart_service
+        with self.assertRaisesRegex(
+            RuntimeError, "App server changed during sandbox probe"
+        ):
+            self.run_doctor()
+        self.assertFalse((self.state / "probe.json").exists())
+
     def test_failure_invalidates_receipt_and_cleans_only_created_artifacts(
         self,
     ) -> None:

@@ -12,6 +12,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from filelock import FileLock
+
 from .config import TESTED_CODEX, atomic, compiled
 from .runtime import RPC
 from .worktrees import effective_workers
@@ -90,11 +92,27 @@ def diagnose(
     if settings["mode"] != "isolated":
         raise ValueError("Enforcement probes require isolated mode")
 
+    with FileLock(str(state / "service.lock"), timeout=10):
+        return _probe_isolated_service(settings, state, result)
+
+
+def _probe_isolated_service(
+    settings: dict[str, Any], state: Path, result: dict[str, Any]
+) -> dict[str, Any]:
     # Invalidate the previous proof before any operation that can fail.  A
     # successful receipt must describe this exact probe run and service.
     app_socket = state / "app.sock"
     if not app_socket.is_socket():
         raise RuntimeError("App server socket is not ready")
+    service = json.loads((state / "service.json").read_text())
+    if (
+        not isinstance(service, dict)
+        or not isinstance(service.get("pid"), int)
+        or isinstance(service.get("pid"), bool)
+        or not isinstance(service.get("generation"), str)
+        or not service["generation"]
+    ):
+        raise RuntimeError("App server service identity is invalid")
 
     marker = ".cpo-probe-" + uuid.uuid4().hex
     roles = {"orchestrator": settings["orchestrator"], **settings["workers"]}
@@ -186,7 +204,9 @@ def diagnose(
         result["ok"] = all(
             _check_passed(check) for row in rows for check in row["checks"]
         )
-        service = json.loads((state / "service.json").read_text())
+        current_service = json.loads((state / "service.json").read_text())
+        if current_service != service:
+            raise RuntimeError("App server changed during sandbox probe")
         receipt = {
             "ok": result["ok"],
             "config_sha256": hashlib.sha256(
