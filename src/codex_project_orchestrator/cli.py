@@ -32,6 +32,9 @@ def parser():
     login = sub.add_parser("login", help="Authenticate the dedicated Codex home")
     login.add_argument("--reuse-current", action="store_true", help="Link the current Codex file credential; never print it")
     sub.add_parser("orch", help="Open an interactive orchestrator in the dedicated home")
+    ask = sub.add_parser("ask", help="Run one non-interactive orchestrator prompt")
+    ask.add_argument("prompt", nargs="?", help="Prompt text; omit to read it from stdin")
+    ask.add_argument("--timeout", type=float, default=1200, help="Maximum seconds to wait for completion")
     doctor = sub.add_parser("doctor", help="Check config and optionally probe actual sandbox access")
     doctor.add_argument("--probe", action="store_true")
     mcp = sub.add_parser("mcp", help="Internal fixed-role MCP entrypoint")
@@ -96,6 +99,24 @@ def run(args):
         if settings["mode"] == "isolated":
             require_probe(settings, state)
         os.execvpe(settings["codex"], [settings["codex"], "--cd", settings["orchestrator"]["cwd"]], services.environment(state))
+    if args.command == "ask":
+        if settings["mode"] != "isolated":
+            raise RuntimeError("Non-interactive orchestrator prompts require isolated mode")
+        if not services.status(state)["ready"]:
+            raise RuntimeError("Start the worker service first")
+        require_probe(settings, state)
+        prompt = args.prompt if args.prompt is not None else sys.stdin.read()
+        if not prompt.strip():
+            raise ValueError("Provide an orchestrator prompt as an argument or on stdin")
+        from .orchestrator import OrchestratorRuntime
+        runtime = OrchestratorRuntime(settings, state)
+        runtime.prompt(prompt)
+        result = runtime.wait(args.timeout)
+        if result.get("status") == "active":
+            raise RuntimeError("Orchestrator is still active after the wait timeout")
+        if result.get("status") == "reconciliation_required":
+            raise RuntimeError("Orchestrator turn requires manual reconciliation")
+        return {"orchestrator": result}
     if args.command == "doctor":
         from .doctor import diagnose
         return diagnose(settings, state, args.probe)

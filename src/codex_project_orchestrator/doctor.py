@@ -12,8 +12,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from filelock import FileLock
+
 from .config import TESTED_CODEX, atomic, compiled
 from .runtime import RPC
+from .worktrees import effective_workers
 
 _PROTECTED = (".codex", ".git", ".agents")
 _DENIED_ERRNOS = {errno.EACCES, errno.EPERM}
@@ -89,11 +92,27 @@ def diagnose(
     if settings["mode"] != "isolated":
         raise ValueError("Enforcement probes require isolated mode")
 
+    with FileLock(str(state / "service.lock"), timeout=10):
+        return _probe_isolated_service(settings, state, result)
+
+
+def _probe_isolated_service(
+    settings: dict[str, Any], state: Path, result: dict[str, Any]
+) -> dict[str, Any]:
     # Invalidate the previous proof before any operation that can fail.  A
     # successful receipt must describe this exact probe run and service.
     app_socket = state / "app.sock"
     if not app_socket.is_socket():
         raise RuntimeError("App server socket is not ready")
+    service = json.loads((state / "service.json").read_text())
+    if (
+        not isinstance(service, dict)
+        or not isinstance(service.get("pid"), int)
+        or isinstance(service.get("pid"), bool)
+        or not isinstance(service.get("generation"), str)
+        or not service["generation"]
+    ):
+        raise RuntimeError("App server service identity is invalid")
 
     marker = ".cpo-probe-" + uuid.uuid4().hex
     roles = {"orchestrator": settings["orchestrator"], **settings["workers"]}
@@ -185,12 +204,16 @@ def diagnose(
         result["ok"] = all(
             _check_passed(check) for row in rows for check in row["checks"]
         )
+        current_service = json.loads((state / "service.json").read_text())
+        if current_service != service:
+            raise RuntimeError("App server changed during sandbox probe")
         receipt = {
             "ok": result["ok"],
             "config_sha256": hashlib.sha256(
                 compiled(settings, state).encode()
             ).hexdigest(),
-            "service_pid": json.loads((state / "service.json").read_text())["pid"],
+            "service_pid": service["pid"],
+            "service_generation": service["generation"],
         }
         atomic(state / "probe.json", json.dumps(receipt))
         return result
@@ -205,6 +228,123 @@ def diagnose(
             except OSError:
                 # Never remove a directory if anything appeared in it during
                 # the probe or if it wasn't created by this run.
+                pass
+
+
+def probe_worktree(
+    settings: dict[str, Any], state: Path, worker: dict[str, Any], rpc: Any
+) -> dict[str, Any]:
+    """Prove a dynamic worker's exact turn sandbox before model execution."""
+    if not worker.get("dynamic_worktree"):
+        raise ValueError("dynamic worktree sandbox probe requires a dynamic worker")
+    state = Path(state)
+    marker = ".cpo-worktree-probe-" + uuid.uuid4().hex
+    cwd = Path(worker["cwd"])
+    common = Path(worker["git_common_dir"])
+    control = Path(worker["git_control_dir"])
+    workers = effective_workers(settings, state)
+    denied_paths = {
+        "state": state / marker,
+        "orchestrator": Path(settings["orchestrator"]["cwd"]) / marker,
+    }
+    denied_paths.update(
+        {
+            "worker:" + name: Path(spec["cwd"]) / marker
+            for name, spec in workers.items()
+            if name != worker["worker_id"]
+        }
+    )
+    allowed_paths = {
+        "worktree": cwd / marker,
+        "git-common": common / marker,
+        "git-control": control / marker,
+    }
+    created_files: list[Path] = []
+    created_directories: list[Path] = []
+    listener: socket.socket | None = None
+    try:
+        for path in [*denied_paths.values(), *allowed_paths.values()]:
+            _create_probe_file(path, created_files)
+        protected = _protected_targets(
+            cwd, marker, created_files, created_directories
+        )
+        targets = [
+            {"name": name, "path": str(path), "op": op, "expect": False}
+            for name, path in denied_paths.items()
+            for op in ("read", "write")
+        ]
+        targets += [
+            {"name": name, "path": str(path), "op": op, "expect": True}
+            for name, path in allowed_paths.items()
+            for op in ("read", "write")
+        ]
+        targets += protected
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(2)
+        port = listener.getsockname()[1]
+        control_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        control_socket.settimeout(1)
+        if control_socket.connect_ex(("127.0.0.1", port)) != 0:
+            raise RuntimeError("Loopback control connection failed")
+        accepted, _ = listener.accept()
+        accepted.close()
+        control_socket.close()
+        targets += [
+            {
+                "name": "network:loopback",
+                "port": port,
+                "op": "tcp_connect",
+                "expect": False,
+            },
+            {
+                "name": "state:app-socket",
+                "path": str(state / "app.sock"),
+                "op": "unix_connect",
+                "expect": False,
+            },
+        ]
+        runnable = [target for target in targets if "outcome" not in target]
+        fixed = [target for target in targets if "outcome" in target]
+        response = rpc.request(
+            "command/exec",
+            {
+                "command": [
+                    str(Path(settings["python"]).resolve()),
+                    "-c",
+                    _PROBE_CODE,
+                    json.dumps(runnable),
+                ],
+                "cwd": str(cwd),
+                "permissionProfile": worker["profile"],
+                "timeoutMs": 10_000,
+            },
+        )
+        if response["exitCode"]:
+            raise RuntimeError(
+                "Dynamic worktree sandbox probe command failed: "
+                + response.get("stderr", "")[:1000]
+            )
+        observed = json.loads(response["stdout"])
+        if not isinstance(observed, list):
+            raise RuntimeError(
+                "Dynamic worktree sandbox probe returned malformed evidence"
+            )
+        checks = observed + fixed
+        if len(observed) != len(runnable) or not all(
+            _check_passed(check) for check in checks
+        ):
+            raise RuntimeError("Dynamic worktree sandbox probe failed")
+        return {"ok": True, "worker_id": worker["worker_id"], "checks": checks}
+    finally:
+        if listener is not None:
+            listener.close()
+        for path in reversed(created_files):
+            path.unlink(missing_ok=True)
+        for path in reversed(created_directories):
+            try:
+                path.rmdir()
+            except OSError:
                 pass
 
 

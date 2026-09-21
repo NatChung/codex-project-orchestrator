@@ -74,7 +74,9 @@ class DoctorTests(unittest.TestCase):
         (self.state / "codex-home/config.toml").write_text(
             compiled(self.settings, self.state), encoding="utf-8"
         )
-        (self.state / "service.json").write_text('{"pid": 4321}', encoding="utf-8")
+        (self.state / "service.json").write_text(
+            '{"pid": 4321, "generation": "generation-a"}', encoding="utf-8"
+        )
         self.app_listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.app_listener.bind(str(self.state / "app.sock"))
         self.app_listener.listen(1)
@@ -128,6 +130,7 @@ class DoctorTests(unittest.TestCase):
             self.assertFalse((cwd / ".agents").exists())
         receipt = json.loads((self.state / "probe.json").read_text())
         self.assertEqual(receipt["service_pid"], 4321)
+        self.assertEqual(receipt["service_generation"], "generation-a")
         self.assertTrue(receipt["ok"])
 
     def test_inconclusive_connection_fails_instead_of_counting_as_denied(self) -> None:
@@ -143,6 +146,26 @@ class DoctorTests(unittest.TestCase):
         result = self.run_doctor()
         self.assertFalse(result["ok"])
         self.assertFalse(json.loads((self.state / "probe.json").read_text())["ok"])
+
+    def test_service_change_during_probe_writes_no_receipt(self) -> None:
+        changed = False
+
+        def restart_service(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            nonlocal changed
+            if not changed:
+                (self.state / "service.json").write_text(
+                    '{"pid": 4321, "generation": "generation-b"}',
+                    encoding="utf-8",
+                )
+                changed = True
+            return successful(targets)
+
+        FakeRPC.handler = restart_service
+        with self.assertRaisesRegex(
+            RuntimeError, "App server changed during sandbox probe"
+        ):
+            self.run_doctor()
+        self.assertFalse((self.state / "probe.json").exists())
 
     def test_failure_invalidates_receipt_and_cleans_only_created_artifacts(
         self,

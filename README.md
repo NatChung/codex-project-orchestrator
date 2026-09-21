@@ -37,6 +37,28 @@ cpo doctor --probe
 cpo orch
 ```
 
+若要從另一個本機 session 交辦一次完整工作，不必控制既有的互動式終端機。`cpo ask` 會透過既有 app server 啟動或續接 persistent Orch thread，沿用相同的 `orch` 權限與 `project_agents` MCP，並在回合完成後把結果寫回目前的終端機：
+
+```sh
+cpo ask '請 alpha worker 唯讀確認測試入口，附上路徑與執行證據。'
+```
+
+也可以從標準輸入提供 prompt：
+
+```sh
+cpo ask < task.txt
+```
+
+後續 `ask` 會續接同一個 Orch thread。Prompt 應包含目標、允許動作、限制、證據與完成條件；已有 active turn 時，新 prompt 會被拒絕，operator 可等待、steer 或 interrupt。
+
+一般 Codex session 可安裝固定 operator MCP，讓模型直接控制 persistent Orch，而不取得 worker mailbox 或專案權限：
+
+```sh
+codex mcp add cpo_operator -- cpo mcp --role operator
+```
+
+重新開啟 Codex session 後會出現 `send_orchestrator_prompt`、`orchestrator_status`、`wait_orchestrator`、`read_orchestrator_result`、`steer_orchestrator`、`interrupt_orchestrator` 與 `acknowledge_orchestrator_reconciliation`。Operator MCP 只控制 Orch；專案派工仍由 Orch 經 `project_agents` 完成。
+
 若既有 Codex 使用檔案儲存登入資訊，可用 `cpo login --reuse-current` 取代登入。它建立指向原有 credential file 的本機 symlink，不會顯示或複製 token；原登入更新也會生效。使用 keychain 的環境請在專用 home 重新登入。
 
 初始化會將目前 Python runtime 加入唯讀例外，供診斷指令使用。其他工具鏈位於受限 home 內或非標準路徑時，在 init 加上精確的 `--runtime-read /absolute/toolchain/path`。這是所有角色共用的唯讀例外；不要指定整個 home、專案或 credential 目錄。`doctor --probe` 不通過時無法派工，請先檢查原因。建議使用一般 home 下的專案目錄；macOS 暫存目錄的特殊允許規則可能讓隔離檢查失敗。
@@ -48,6 +70,10 @@ cpo orch
 尚無專案時，可先照 [兩個假專案示範](docs/demo.md) 試跑。
 
 Orch 使用 `project_agents` MCP：`list_workers` → `send_message` → `check_worker_inbox` → `worker_status`／`fetch_inbox` → 核對保存 → `acknowledge_message`。送進信箱不等於開始執行；worker 回報也不等於人類驗收。
+
+同一個 Git repo 需要平行工作時，Orch 可先呼叫 `create_worktree_worker(project, task_id, ref)`。工具會在 `worktree_root` 建立 detached linked worktree，回傳新的 `worker_id`；後續用該 ID 派工及喚醒。相同 project、task ID 與 ref 的重送是冪等的。需要一起測試、一起 commit 的跨 Flutter／React／backend 修改應放在同一個 worktree worker，不要依服務拆散。首版保留 worktree 供人工檢查，尚不自動刪除。
+
+初始化會為每個 base project 預先產生一個 `worktree-<project>` permission profile。動態 worker 每回合都先以 App Server `command/exec` 對該回合即將使用的同一個 profile 與 worktree cwd 做實際檔案及網路 probe；失敗就不啟動模型。Profile 只允許寫目前 worktree workspace root 與 linked-worktree 必需的共用 Git metadata，拒絕 base checkout、其他 worker、Orch workspace 與 runtime state，並關閉 shell network。Linked worktree 仍共享 base repo 的 Git objects 與 refs，因此它是工作目錄隔離，不是互不影響的 Git storage。
 
 ## 管理設定
 
@@ -66,7 +92,30 @@ cpo doctor --probe
 cpo orch
 ```
 
-新增專案需在 `settings.toml` 的 `[workers.<id>]` 設定 `cwd` 與 `profile = "worker-<id>"`。專案 ID 使用小寫字母、數字與連字號，開頭須為字母。
+新增專案需在 `settings.toml` 的 `[workers.<id>]` 設定 `cwd` 與 `profile = "worker-<id>"`。專案 ID 使用小寫字母、數字與連字號，開頭須為字母；`orchestrator`、`operator`、`orch` 與 `local` 是控制面保留名稱，不能作為 worker ID。
+
+`worktree_root` 預設是 Orch workspace 同層的 `worktrees` 資料夾，可在 `settings.toml` 指定另一個不與專案、state 或 credential 目錄重疊的 canonical absolute path。變更後同樣要 apply、重啟並重新 probe。
+
+模型按角色指定：Orch 預設 `gpt-6-astra`，所有 worker 預設 `gpt-5.6-sol`。
+初始化會將 `model` 寫入各角色設定；舊設定省略此欄位時也使用上述預設。
+可在既有角色區段內調整，例如：
+
+```toml
+[orchestrator]
+cwd = "/synthetic/orch"
+profile = "orch"
+model = "gpt-6-astra"
+
+[workers.alpha]
+cwd = "/synthetic/alpha"
+profile = "worker-alpha"
+model = "gpt-5.6-sol"
+```
+
+Orch 從專用 Codex home 的設定讀取模型；worker 在 thread start／resume 與每次 turn start 明確指定模型。
+變更後依上述 stop → apply → start → doctor → orch 流程重啟；正在執行的回合不會切換模型。
+帳號及 Codex 版本必須支援指定模型。本工具不會自動替換不可用的模型。
+這些設定只作用於本工具啟動的 session；直接在 Codex 桌面版開啟本 repo 的對話不會自動套用。
 
 ```sh
 cpo stop

@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import tomllib
 import unittest
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -123,6 +124,34 @@ class CliSettingsTests(unittest.TestCase):
         self.assertEqual(settings_before, settings_path.read_bytes())
         self.assertEqual(config_before, config_path.read_bytes())
         self.assertEqual("isolated", load(self.state)["mode"])
+
+    def test_ask_runs_prompt_on_persistent_orchestrator(self) -> None:
+        args = self.args("ask", "delegate the synthetic task")
+        completed = {
+            "identity": "orchestrator",
+            "thread_id": "thread-1",
+            "status": "idle",
+            "last_response": "done",
+        }
+        with (
+            patch("codex_project_orchestrator.services.status", return_value={"ready": True}),
+            patch("codex_project_orchestrator.cli.require_probe"),
+            patch("codex_project_orchestrator.orchestrator.OrchestratorRuntime") as runtime,
+        ):
+            runtime.return_value.wait.return_value = completed
+            self.assertEqual(cli.run(args), {"orchestrator": completed})
+        runtime.return_value.prompt.assert_called_once_with("delegate the synthetic task")
+        runtime.return_value.wait.assert_called_once_with(1200)
+
+    def test_ask_reads_stdin_and_rejects_empty_prompt(self) -> None:
+        args = self.args("ask")
+        with (
+            patch("codex_project_orchestrator.services.status", return_value={"ready": True}),
+            patch("codex_project_orchestrator.cli.require_probe"),
+            patch("sys.stdin", StringIO("  ")),
+        ):
+            with self.assertRaisesRegex(ValueError, "Provide an orchestrator prompt"):
+                cli.run(args)
 
 
 if __name__ == "__main__":

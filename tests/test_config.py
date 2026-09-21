@@ -5,7 +5,7 @@ import tomllib
 import unittest
 from pathlib import Path
 
-from codex_project_orchestrator.config import compiled, initialize, load, require_probe
+from codex_project_orchestrator.config import compiled, initialize, load, require_probe, role_model, validate
 
 
 class ConfigTests(unittest.TestCase):
@@ -31,6 +31,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(original.read_text(), 'existing project rules')
         self.assertEqual(list(self.beta.iterdir()), [])
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(settings['worktree_root'], str(self.root / 'worktrees'))
 
     def test_profiles_and_external_state(self):
         config = tomllib.loads(compiled(self.initialize(), self.state))
@@ -42,11 +43,47 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(fs[str(self.state)], 'deny')
         self.assertEqual(fs[str(self.alpha / '.codex')], 'read')
         self.assertEqual(config['projects'][str(self.alpha)]['trust_level'], 'untrusted')
+        worktree = config['permissions']['worktree-alpha']
+        self.assertFalse(worktree['network']['enabled'])
+        self.assertEqual(worktree['filesystem'][str(self.alpha)], 'deny')
+        self.assertEqual(worktree['filesystem'][str(self.alpha / '.git')], 'write')
+        self.assertEqual(worktree['filesystem'][':workspace_roots']['.'], 'write')
+        self.assertEqual(worktree['filesystem'][':workspace_roots']['.git'], 'read')
+        tools = config['mcp_servers']['project_agents']['tools']
+        self.assertIn('create_worktree_worker', tools)
+        self.assertIn('list_worktree_workers', tools)
+
+    def test_worktree_root_cannot_overlap_projects_or_state(self):
+        settings = self.initialize()
+        for invalid in (self.alpha, self.state, Path.home()):
+            with self.subTest(invalid=invalid):
+                changed = dict(settings)
+                changed['worktree_root'] = str(invalid)
+                with self.assertRaises(ValueError):
+                    validate(changed, self.state)
 
     def test_reinitialize_refused(self):
         self.initialize()
         with self.assertRaises(ValueError):
             self.initialize()
+
+    def test_role_models_defaults_overrides_and_legacy_settings(self):
+        settings = self.initialize()
+        self.assertEqual(settings['orchestrator']['model'], 'gpt-6-astra')
+        self.assertEqual(settings['workers']['alpha']['model'], 'gpt-5.6-sol')
+        self.assertEqual(tomllib.loads(compiled(settings, self.state))['model'], 'gpt-6-astra')
+        settings['orchestrator']['model'] = 'synthetic-orch'
+        settings['workers']['alpha']['model'] = 'synthetic-worker'
+        self.assertEqual(tomllib.loads(compiled(settings, self.state))['model'], 'synthetic-orch')
+        self.assertEqual(role_model(settings, 'alpha'), 'synthetic-worker')
+        del settings['workers']['alpha']['model']
+        self.assertEqual(role_model(settings, 'alpha'), 'gpt-5.6-sol')
+        del settings['orchestrator']['model']
+        self.assertEqual(role_model(settings, 'orchestrator'), 'gpt-6-astra')
+        for invalid in ('', '  ', ' padded ', None, 123):
+            settings['workers']['alpha']['model'] = invalid
+            with self.assertRaises(ValueError):
+                validate(settings, self.state)
 
     def test_overlapping_projects_refused(self):
         child = self.alpha / 'child'
@@ -60,9 +97,23 @@ class ConfigTests(unittest.TestCase):
             initialize(self.alpha / 'state', self.orch, ['alpha=' + str(self.alpha)])
 
     def test_invalid_ids_and_duplicates(self):
-        for values in [['../bad=' + str(self.alpha)], ['orchestrator=' + str(self.alpha)], ['x=' + str(self.alpha), 'x=' + str(self.beta)]]:
+        for values in [
+            ['../bad=' + str(self.alpha)],
+            *[[reserved + '=' + str(self.alpha)] for reserved in ('orchestrator', 'operator', 'orch', 'local')],
+            ['x=' + str(self.alpha), 'x=' + str(self.beta)],
+        ]:
             with self.assertRaises(ValueError):
                 initialize(self.state, self.orch, values)
+
+    def test_manual_settings_cannot_register_reserved_worker(self):
+        settings = self.initialize()
+        for reserved in ('orchestrator', 'operator', 'orch', 'local'):
+            with self.subTest(reserved=reserved):
+                changed = dict(settings)
+                changed['workers'] = dict(settings['workers'])
+                changed['workers'][reserved] = changed['workers'].pop('alpha')
+                with self.assertRaisesRegex(ValueError, 'Invalid project ID'):
+                    validate(changed, self.state)
 
     def test_runtime_read_cannot_grant_other_projects(self):
         with self.assertRaises(ValueError):
@@ -78,14 +129,17 @@ class ConfigTests(unittest.TestCase):
         settings = self.initialize()
         with self.assertRaises(RuntimeError):
             require_probe(settings, self.state)
-        (self.state / 'service.json').write_text(json.dumps({'pid': 123}))
-        receipt = {'ok': True, 'service_pid': 123, 'config_sha256': hashlib.sha256(compiled(settings, self.state).encode()).hexdigest()}
+        (self.state / 'service.json').write_text(json.dumps({'pid': 123, 'generation': 'generation-a'}))
+        receipt = {'ok': True, 'service_pid': 123, 'service_generation': 'generation-a', 'config_sha256': hashlib.sha256(compiled(settings, self.state).encode()).hexdigest()}
         (self.state / 'probe.json').write_text(json.dumps(receipt))
         require_probe(settings, self.state)
-        (self.state / 'service.json').write_text(json.dumps({'pid': 124}))
+        (self.state / 'service.json').write_text(json.dumps({'pid': 124, 'generation': 'generation-b'}))
         with self.assertRaises(RuntimeError):
             require_probe(settings, self.state)
-        (self.state / 'service.json').write_text(json.dumps({'pid': 123}))
+        (self.state / 'service.json').write_text(json.dumps({'pid': 123, 'generation': 'generation-b'}))
+        with self.assertRaises(RuntimeError):
+            require_probe(settings, self.state)
+        (self.state / 'service.json').write_text(json.dumps({'pid': 123, 'generation': 'generation-a'}))
         (self.state / 'codex-home/config.toml').write_text('default_permissions = ":danger-full-access"')
         with self.assertRaises(RuntimeError):
             require_probe(settings, self.state)

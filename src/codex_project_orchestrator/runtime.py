@@ -20,6 +20,8 @@ from typing import Any, Never, Self
 
 from filelock import FileLock
 
+from .config import role_model
+
 
 class RuntimeErrorBase(RuntimeError):
     """Base class for errors callers may safely present to an operator."""
@@ -199,7 +201,8 @@ class Runtime:
     def wake(self, project: str) -> dict[str, Any]:
         if self.settings.get("mode") != "isolated":
             raise RuntimeErrorBase("workers can only be woken in isolated mode")
-        workers = self.settings.get("workers", {})
+        from .worktrees import effective_workers
+        workers = effective_workers(self.settings, self.state)
         if project not in workers:
             raise RuntimeErrorBase(f"unknown registered worker: {project}")
         worker = workers[project]
@@ -263,17 +266,22 @@ class Runtime:
         # side effects.  os.replace in _write_metadata makes this atomic.
         ready = self._metadata(project, thread_id, cwd, profile, "idle")
         self._write_metadata(project, ready)
+        from .doctor import probe_worktree
+        from .worktrees import effective_workers
+
+        worker = effective_workers(self.settings, self.state)[project]
+        if worker.get("dynamic_worktree"):
+            probe_worktree(self.settings, self.state, worker, rpc)
+        turn_params = {
+            "threadId": thread_id,
+            "model": common["model"],
+            "input": [{"type": "text", "text": _WAKE_PROMPT}],
+            "cwd": str(cwd),
+            "permissions": profile,
+            "approvalPolicy": "never",
+        }
         try:
-            rpc.request(
-                "turn/start",
-                {
-                    "threadId": thread_id,
-                    "input": [{"type": "text", "text": _WAKE_PROMPT}],
-                    "cwd": str(cwd),
-                    "permissions": profile,
-                    "approvalPolicy": "never",
-                },
-            )
+            rpc.request("turn/start", turn_params)
         except RPCUncertainError as exc:
             self._mark_ambiguous(project, cwd, profile, ready, exc)
         active = self._metadata(project, thread_id, cwd, profile, "active")
@@ -308,7 +316,8 @@ class Runtime:
     def worker_status(self, project: str | None = None) -> Any:
         """Return lifecycle metadata, refreshing thread state without turn content."""
         if project is not None:
-            workers = self.settings.get("workers", {})
+            from .worktrees import effective_workers
+            workers = effective_workers(self.settings, self.state)
             if project not in workers:
                 raise RuntimeErrorBase(f"unknown registered worker: {project}")
             worker = workers[project]
@@ -337,31 +346,44 @@ class Runtime:
                 )
                 self._write_metadata(project, refreshed)
                 return refreshed
+        from .worktrees import effective_workers
+
         return {
-            name: self.worker_status(name) for name in self.settings.get("workers", {})
+            name: self.worker_status(name)
+            for name in effective_workers(self.settings, self.state)
         }
 
-    def _thread_params(self, project: str, cwd: Path, profile: str) -> dict[str, Any]:
+    def _thread_params(
+        self, project: str, cwd: Path, profile: str
+    ) -> dict[str, Any]:
         python = self.settings.get("python")
         if not isinstance(python, str) or not Path(python).is_absolute():
             raise RuntimeErrorBase("settings.python must be an absolute path")
-        return {
+        from .worktrees import effective_workers
+        worker = effective_workers(self.settings, self.state)[project]
+        config = {
+            "mcp_servers.project_agents.args": [
+                "-m",
+                "codex_project_orchestrator",
+                "--state",
+                str(self.state),
+                "mcp",
+                "--role",
+                project,
+            ]
+        }
+        model = worker.get("model")
+        if not isinstance(model, str) or not model:
+            model = role_model(self.settings, project)
+        result = {
             "cwd": str(cwd),
+            "model": model,
             "permissions": profile,
             "approvalPolicy": "never",
             "developerInstructions": _DEVELOPER_INSTRUCTIONS,
-            "config": {
-                "mcp_servers.project_agents.args": [
-                    "-m",
-                    "codex_project_orchestrator",
-                    "--state",
-                    str(self.state),
-                    "mcp",
-                    "--role",
-                    project,
-                ]
-            },
+            "config": config,
         }
+        return result
 
     def _validate_effective(
         self,
