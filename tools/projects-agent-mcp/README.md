@@ -9,7 +9,8 @@ vendor or install Agent Mail. Verify that dependency's license separately.
 
 Copy `operator.example.toml` to a private `operator.toml` outside the checkout.
 Set `PROJECTS_AGENT_SETTINGS` to its absolute path when running maintenance tools.
-Use an operator-controlled absolute workspace and runtime path. The optional
+Use operator-controlled absolute workspace and runtime paths. Resolved runtime
+paths must not overlap the workspace or any registered project (including aliases). The optional
 `communications_worker` is a registered role, not a permission grant. Tracking
 requires explicit `[tracking] repo` and `account`; no public tracker is assumed.
 
