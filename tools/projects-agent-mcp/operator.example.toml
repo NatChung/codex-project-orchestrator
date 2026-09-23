@@ -1,0 +1,10 @@
+# Copy outside the checkout; never commit the filled-in file.
+workspace = "/home/operator/work"
+runtime = "/home/operator/.local/share/projects-agent-mcp"
+communications_worker = "communications"
+
+# Optional; required only when using track_task. Keep private business tasks
+# in a private tracker, even when this source repository is public.
+[tracking]
+repo = "example/private-coordination"
+account = "example"

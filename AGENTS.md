@@ -1,6 +1,10 @@
 # Repository work
 
-This repository is the reusable tool, not an operator's orchestration workspace.
+If `docs/local-workspace.md` exists, read it first for this operator's local
+workspace role and project routing. It is private and excluded from Git.
+
+The tracked files are the reusable tool; local workspace configuration stays
+outside the tracked source.
 Read README.md for the supported install and lifecycle flow. For changes to
 permissions, dispatch, persistence or recovery, read docs/security.md first.
 
