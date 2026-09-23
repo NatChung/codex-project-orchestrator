@@ -7,7 +7,7 @@ import shutil
 import sys
 import tomllib
 from pathlib import Path
-from operator_settings import operator_settings
+from operator_settings import operator_settings, require_separate_runtime
 
 SOURCE=Path(__file__).resolve().parent
 ROOT=Path(operator_settings()['workspace'])
@@ -21,6 +21,8 @@ def main():
     parser.add_argument('--apply',action='store_true')
     args=parser.parse_args()
     reg=json.loads((BASE/'registry.json').read_text())
+    for spec in reg.values():
+        require_separate_runtime(BASE, spec['cwd'])
     runtime=tomllib.loads((BASE/'runtime.toml').read_text())
     state=json.loads((ROOT/'.projects-mode-state.json').read_text())
     global_config=tomllib.loads((Path.home()/'.codex/config.toml').read_text())

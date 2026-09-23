@@ -8,7 +8,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from operator_settings import operator_settings
+from operator_settings import operator_settings, require_separate_runtime
 from tracking_io import GitHubIssues
 
 class OperatorSettingsTests(unittest.TestCase):
@@ -33,7 +33,7 @@ class OperatorSettingsTests(unittest.TestCase):
 
     def test_installer_dry_run_and_private_config_persistence(self):
         with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
+            base = Path(directory).resolve()
             workspace = base / 'work'; runtime = base / 'state'; home = base / 'home'
             for target in (workspace / '.codex', runtime, home / '.codex'):
                 target.mkdir(parents=True)
@@ -53,3 +53,13 @@ class OperatorSettingsTests(unittest.TestCase):
             self.assertEqual(tomllib.loads((runtime / 'operator.toml').read_text())['runtime'], str(runtime))
             self.assertTrue((runtime / 'operator_settings.py').exists())
             self.assertTrue((runtime / 'backups').is_dir())
+
+    def test_control_state_cannot_overlap_projects_or_symlink_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            project = base / 'project'; project.mkdir()
+            alias = base / 'alias'; alias.symlink_to(project, target_is_directory=True)
+            for runtime in (project, project / 'state', base, alias / 'state'):
+                with self.subTest(runtime=runtime), self.assertRaises(ValueError):
+                    require_separate_runtime(runtime, project)
+            require_separate_runtime(base / 'private-state', project)
