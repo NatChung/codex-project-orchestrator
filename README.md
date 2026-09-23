@@ -4,6 +4,17 @@
 
 這是一個小型、可自行管理的本機工具。協調者負責派工與核對；每個 worker 有自己的 session、工作目錄與權限。專案本身的程式碼、業務規則與 Git 歷史留在各自的 repo。
 
+## 共用來源與本機工作區
+
+此 repo 也可作為既有多專案工作區的版控來源。個人專案索引、權限設定、
+憑證、任務與驗證收據留在本機；`.gitignore` 只放行共用原始碼及文件。
+已有私人 Git 歷史時，沿用此公開 repo 的歷史，不把私人歷史合併進來。
+操作與搬機界線見 [工作區版控](docs/workspace-versioning.md)。
+
+既有 Agent Mail 安裝的管理修復保存在 [相容 adapter](tools/projects-agent-mcp/README.md)。
+它與 `cpo` 共用版控來源，但使用不同 mailbox backend；更新 Git 不會轉換 runtime、
+重新登入、搬移 mailbox 或派送舊任務。新安裝仍使用下方 `cpo` 流程。
+
 ## 目前範圍
 
 - Python 3.11+、Codex CLI **0.154.0**；使用尚在變動的 app-server 與 permission profiles API。
